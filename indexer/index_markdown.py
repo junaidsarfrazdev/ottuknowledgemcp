@@ -1,0 +1,148 @@
+"""Standalone markdown / docx / xlsx indexer for internal docs.
+
+Files are specified by absolute path in config.MARKDOWN_FILES.
+All go into a single collection: config.INTERNAL_DOCS_COLLECTION.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from pathlib import Path
+
+import chromadb
+from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
+from rich.console import Console
+
+from . import config
+from .embeddings import OllamaEmbeddings
+
+console = Console()
+
+_MD_SPLITTER = RecursiveCharacterTextSplitter.from_language(
+    language=Language.MARKDOWN,
+    chunk_size=config.CHUNK_SIZE,
+    chunk_overlap=config.CHUNK_OVERLAP,
+)
+_DEFAULT_SPLITTER = RecursiveCharacterTextSplitter(
+    chunk_size=config.CHUNK_SIZE, chunk_overlap=config.CHUNK_OVERLAP
+)
+
+
+def _load_md(path: Path) -> list[tuple[str, dict]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return [(p, {}) for p in _MD_SPLITTER.split_text(text) if p.strip()]
+
+
+def _load_docx(path: Path) -> list[tuple[str, dict]]:
+    try:
+        from docx import Document  # type: ignore
+    except ImportError:
+        console.print("[red]python-docx not installed. Install requirements.txt.[/red]")
+        return []
+    doc = Document(str(path))
+    parts: list[str] = []
+    for para in doc.paragraphs:
+        if para.text.strip():
+            parts.append(para.text)
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            cells = [c.text.replace("\n", " ").strip() for c in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    text = "\n".join(parts)
+    return [(p, {}) for p in _DEFAULT_SPLITTER.split_text(text) if p.strip()]
+
+
+def _load_xlsx(path: Path) -> list[tuple[str, dict]]:
+    try:
+        from openpyxl import load_workbook  # type: ignore
+    except ImportError:
+        console.print("[red]openpyxl not installed. Install requirements.txt.[/red]")
+        return []
+    wb = load_workbook(filename=str(path), data_only=True, read_only=True)
+    chunks: list[tuple[str, dict]] = []
+    for sheet in wb.sheetnames:
+        ws = wb[sheet]
+        rows_text: list[str] = []
+        for row in ws.iter_rows(values_only=True):
+            cells = ["" if v is None else str(v) for v in row]
+            if any(c.strip() for c in cells):
+                rows_text.append(",".join(cells))
+        if not rows_text:
+            continue
+        sheet_text = f"# Sheet: {sheet}\n" + "\n".join(rows_text)
+        for piece in _DEFAULT_SPLITTER.split_text(sheet_text):
+            if piece.strip():
+                chunks.append((piece, {"sheet_name": sheet}))
+    return chunks
+
+
+def _load(path: Path) -> list[tuple[str, dict]]:
+    suf = path.suffix.lower()
+    if suf == ".md":
+        return _load_md(path)
+    if suf == ".docx":
+        return _load_docx(path)
+    if suf == ".xlsx":
+        return _load_xlsx(path)
+    console.print(f"[yellow]\u26a0[/yellow]  Skipping unsupported file: {path}")
+    return []
+
+
+def index_internal_docs(
+    client: chromadb.ClientAPI, embeddings: OllamaEmbeddings
+) -> dict:
+    if not config.MARKDOWN_FILES:
+        console.print(
+            "[dim]No MARKDOWN_FILES configured. Drop files in docs_local/ and add their "
+            "absolute paths to indexer/config.py MARKDOWN_FILES to index them.[/dim]"
+        )
+        return {"chunks_written": 0}
+
+    collection = client.get_or_create_collection(
+        name=config.INTERNAL_DOCS_COLLECTION,
+        metadata={"ottu_internal_docs": True},
+    )
+    ids: list[str] = []
+    docs: list[str] = []
+    metas: list[dict] = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for raw_path in config.MARKDOWN_FILES:
+        path = Path(raw_path)
+        if not path.exists():
+            console.print(f"[red]\u2717[/red] missing internal doc: {path}")
+            continue
+        # Remove prior content for this file
+        try:
+            collection.delete(where={"path": str(path)})
+        except Exception:
+            pass
+        pieces = _load(path)
+        for idx, (piece, extra) in enumerate(pieces):
+            cid = f"internal:{path.as_posix()}:{idx}"
+            meta = {
+                "path": str(path),
+                "filename": path.name,
+                "chunk_index": idx,
+                "format": path.suffix.lower().lstrip("."),
+                "ingested_at": now_iso,
+            }
+            meta.update(extra)
+            ids.append(cid)
+            docs.append(piece)
+            metas.append(meta)
+        console.print(f"[green]\u2713[/green] {path.name}: {len(pieces)} chunks")
+
+    if ids:
+        B = config.EMBED_BATCH_SIZE
+        for i in range(0, len(ids), B):
+            batch = docs[i : i + B]
+            vectors = embeddings.embed_documents(batch, batch_size=B)
+            collection.add(
+                ids=ids[i : i + B],
+                documents=batch,
+                metadatas=metas[i : i + B],
+                embeddings=vectors,
+            )
+
+    return {"chunks_written": len(ids), "files": len(config.MARKDOWN_FILES)}

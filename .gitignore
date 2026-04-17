@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+.index_metadata.json
+repos/
+docs_local/
+!docs_local/.gitkeep
+.pytest_cache/
+*.egg-info/
