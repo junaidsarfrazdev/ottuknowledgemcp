@@ -32,8 +32,10 @@ DEFAULT_SNIPPET_CHARS = 600
 # L2 distance ceiling for search_multi. For nomic-embed-text on unit vectors,
 # dist≈0.5 ≈ cosine_sim≈0.875. Raise to 0.7 if results feel too sparse.
 DISTANCE_THRESHOLD = 0.5
-# Guard against oversized listings when scanning all metadatas for find_file.
+# Cap total metadatas scanned across all collections in find_file. Chunks are
+# fetched in pages of FIND_FILE_PAGE_SIZE so we never materialize the full set.
 MAX_METADATAS_SCAN = 50_000
+FIND_FILE_PAGE_SIZE = 2_000
 
 
 def _get_embeddings() -> OllamaEmbeddings:
@@ -354,6 +356,8 @@ async def _handle_get_file_chunks(args: dict[str, Any]) -> list[TextContent]:
     if coll is None:
         return [TextContent(type="text", text=f"Unknown repo/site: '{repo}'. Try list_ottu_sources.")]
 
+    # Crawl-mode docs have only `url` (no `path`), so fall back to a url match
+    # when the path lookup turns up empty.
     try:
         res = coll.get(where={"path": path}, include=["documents", "metadatas"])
     except Exception as e:
@@ -362,6 +366,16 @@ async def _handle_get_file_chunks(args: dict[str, Any]) -> list[TextContent]:
     ids = res.get("ids") or []
     docs = res.get("documents") or []
     metas = res.get("metadatas") or []
+
+    if not ids:
+        try:
+            res = coll.get(where={"url": path}, include=["documents", "metadatas"])
+            ids = res.get("ids") or []
+            docs = res.get("documents") or []
+            metas = res.get("metadatas") or []
+        except Exception:
+            pass
+
     if not ids:
         return [
             TextContent(
@@ -409,28 +423,52 @@ async def _handle_find_file(args: dict[str, Any]) -> list[TextContent]:
 
     matches: dict[str, int] = {}
     scanned = 0
+    truncated = False
     for label, coll in targets:
-        try:
-            all_meta = coll.get(include=["metadatas"])
-        except Exception:
-            continue
-        for meta in all_meta.get("metadatas") or []:
-            scanned += 1
-            if scanned > MAX_METADATAS_SCAN:
+        offset = 0
+        while scanned < MAX_METADATAS_SCAN:
+            try:
+                page = coll.get(
+                    include=["metadatas"],
+                    limit=FIND_FILE_PAGE_SIZE,
+                    offset=offset,
+                )
+            except Exception:
                 break
-            p = (meta or {}).get("path") or (meta or {}).get("url") or ""
-            if pattern in p.lower():
-                matches[f"{label}:{p}"] = matches.get(f"{label}:{p}", 0) + 1
-        if scanned > MAX_METADATAS_SCAN:
+            metas = page.get("metadatas") or []
+            if not metas:
+                break
+            for meta in metas:
+                scanned += 1
+                if scanned > MAX_METADATAS_SCAN:
+                    truncated = True
+                    break
+                p = (meta or {}).get("path") or (meta or {}).get("url") or ""
+                if pattern in p.lower():
+                    key = f"{label}:{p}"
+                    matches[key] = matches.get(key, 0) + 1
+            if len(metas) < FIND_FILE_PAGE_SIZE:
+                break
+            offset += FIND_FILE_PAGE_SIZE
+        if scanned >= MAX_METADATAS_SCAN:
+            truncated = True
             break
 
     if not matches:
-        return [TextContent(type="text", text=f"No files matching '{pattern}'.")]
+        msg = f"No files matching '{pattern}'."
+        if truncated:
+            msg += f" (Scanned the cap of {MAX_METADATAS_SCAN} chunks; narrow the pattern or pass `repo` to search further.)"
+        return [TextContent(type="text", text=msg)]
 
     sorted_hits = sorted(matches.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
     lines = [f"**{len(sorted_hits)} file(s) matching `{pattern}`:**"]
     for label_path, count in sorted_hits:
         lines.append(f"- `{label_path}` — {count} chunk(s)")
+    if truncated:
+        lines.append(
+            f"\n_Note: scan capped at {MAX_METADATAS_SCAN} chunks; results may be incomplete. "
+            "Pass `repo` to narrow the search._"
+        )
     return [TextContent(type="text", text="\n".join(lines))]
 
 

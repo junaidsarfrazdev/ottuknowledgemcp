@@ -197,6 +197,7 @@ def freshness_cmd() -> None:
     table.add_column("Source")
     table.add_column("Kind")
     table.add_column("Status")
+    table.add_column("Chunks", justify="right")
     table.add_column("Indexed SHA")
     table.add_column("Current SHA")
     for r in rows_code:
@@ -204,6 +205,7 @@ def freshness_cmd() -> None:
             r["name"],
             "repo",
             r["status"],
+            str(r.get("chunks", 0)),
             (r.get("indexed_sha") or "-")[:10],
             (r.get("current_sha") or "-")[:10],
         )
@@ -212,6 +214,7 @@ def freshness_cmd() -> None:
             r["name"],
             "docs:" + r.get("mode", "?"),
             r["status"],
+            str(r.get("chunks", 0)),
             (r.get("indexed_sha") or "-")[:10],
             (r.get("current_sha") or r.get("last_modified") or "-")[:40],
         )

@@ -208,16 +208,28 @@ def _index_docusaurus_repo(
         known_files.pop(rel, None)
         removed += 1
 
+    # Upsert + per-batch metadata checkpoint so a crash mid-run loses at
+    # most one batch of work and restart never collides on duplicate IDs.
     if ids_to_add:
         B = config.EMBED_BATCH_SIZE
         for i in range(0, len(ids_to_add), B):
             batch = docs_to_add[i : i + B]
             vectors = embeddings.embed_documents(batch, batch_size=B)
-            collection.add(
+            collection.upsert(
                 ids=ids_to_add[i : i + B],
                 documents=batch,
                 metadatas=metas_to_add[i : i + B],
                 embeddings=vectors,
+            )
+            _save_site_metadata(
+                root,
+                {
+                    "site": site["name"],
+                    "mode": "docusaurus_repo",
+                    "head_sha": head_sha,
+                    "indexed_at": now_iso,
+                    "files": known_files,
+                },
             )
 
     _save_site_metadata(
@@ -322,7 +334,7 @@ def _index_crawl(
         for i in range(0, len(ids), B):
             batch = docs[i : i + B]
             vectors = embeddings.embed_documents(batch, batch_size=B)
-            collection.add(
+            collection.upsert(
                 ids=ids[i : i + B],
                 documents=batch,
                 metadatas=metas[i : i + B],

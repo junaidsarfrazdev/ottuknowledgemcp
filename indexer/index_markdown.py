@@ -189,17 +189,20 @@ def index_internal_docs(
         known_files.pop(key, None)
         removed += 1
 
+    # Upsert + per-batch checkpoint so partial failures don't poison
+    # incremental state or collide on re-run.
     if ids:
         B = config.EMBED_BATCH_SIZE
         for i in range(0, len(ids), B):
             batch = docs[i : i + B]
             vectors = embeddings.embed_documents(batch, batch_size=B)
-            collection.add(
+            collection.upsert(
                 ids=ids[i : i + B],
                 documents=batch,
                 metadatas=metas[i : i + B],
                 embeddings=vectors,
             )
+            _save_meta({"indexed_at": now_iso, "files": known_files})
 
     _save_meta({"indexed_at": now_iso, "files": known_files})
 

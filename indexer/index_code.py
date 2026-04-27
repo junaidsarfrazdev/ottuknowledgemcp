@@ -283,25 +283,38 @@ def index_repo(
         known_files.pop(rel, None)
         removed += 1
 
-    # Add new/changed chunks in batches
+    # Add new/changed chunks in batches. Use upsert so a partial-failure
+    # restart can re-add the same IDs without raising on duplicates, and
+    # checkpoint metadata after every batch so a crash mid-run loses at
+    # most one batch of work instead of the whole repo.
     if ids_to_add:
         B = config.EMBED_BATCH_SIZE
         for i in range(0, len(ids_to_add), B):
             batch_docs = docs_to_add[i : i + B]
             vectors = embeddings.embed_documents(batch_docs, batch_size=B)
-            collection.add(
+            collection.upsert(
                 ids=ids_to_add[i : i + B],
                 documents=batch_docs,
                 metadatas=metas_to_add[i : i + B],
                 embeddings=vectors,
             )
+            _save_metadata(
+                root,
+                {
+                    "head_sha": head_sha,
+                    "indexed_at": datetime.now(timezone.utc).isoformat(),
+                    "files": known_files,
+                },
+            )
 
-    metadata = {
-        "head_sha": head_sha,
-        "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "files": known_files,
-    }
-    _save_metadata(root, metadata)
+    _save_metadata(
+        root,
+        {
+            "head_sha": head_sha,
+            "indexed_at": datetime.now(timezone.utc).isoformat(),
+            "files": known_files,
+        },
+    )
 
     console.print(
         f"[green]\u2713[/green] {repo['name']}: "
