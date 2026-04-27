@@ -1,0 +1,131 @@
+# Eval question bank for MCP-vs-baseline comparison.
+#
+# Each question is an independent task Claude Code must answer. The `must_cite`
+# / `must_mention` fields are ground-truth — a correct answer should reference
+# these files and terms. `must_not_hallucinate` lists paths/terms that look
+# plausible but do NOT exist in the codebase; naming one of these is a
+# hallucination flag.
+#
+# Categories (used in report rollup):
+#   lookup        — "where is X?"  Tests file-finding.
+#   architecture  — "how does X work end-to-end?"  Tests trace-through.
+#   security      — "how does X prevent Y?"  Tests invariant understanding.
+#   integration   — "if I added Z, what changes?"  Tests mental model.
+#   bug_hunt      — "why would X silently fail?"  Tests debugging.
+#   flow_variant  — differences between related flows.
+#
+# Seed questions below are based on the Jazz onsite checkout flow. Replace with
+# questions from your own tickets/Slack threads before running the eval for
+# real — a defensible eval uses questions you didn't construct to flatter MCP.
+
+questions:
+  - id: jazz_iframe_creation
+    category: lookup
+    question: |
+      Where in the codebase is the Jazz SDK's iframe creation logic? Name the
+      primary file(s), functions, and roughly what each does.
+    must_cite:
+      files:
+        - jazz_sdk/src/jazzSDK.ts
+        - jazz_sdk/src/iframeManager.ts
+      functions:
+        - createCardIframe
+        - createIframe
+    must_not_hallucinate:
+      - jazz_sdk/src/createIframe.ts
+      - jazz_sdk/src/iframe.ts
+    must_mention:
+      - _determineIframeUrl
+      - postMessage
+    bonus:
+      - validateAndGetIframeUrls
+      - ALLOWED_PG_HOSTS
+      - iframe-ready
+
+  - id: jazz_end_to_end_flow
+    category: architecture
+    question: |
+      Trace the end-to-end onsite Jazz-iframe checkout flow from the moment
+      the merchant page loads the SDK to the payment result being returned.
+      Which repos participate and what is each's role?
+    must_cite:
+      repos:
+        - checkout_sdk
+        - jazz_sdk
+        - ottu_pg
+      files:
+        - checkout_sdk/checkout/v3/selector.js
+        - checkout_sdk/checkout/v3/JazzIntegration.js
+        - jazz_sdk/src/jazzSDK.ts
+        - jazz_sdk/src/paymentHandler.ts
+    must_mention:
+      - direct_payment_url
+      - trandata
+      - RSA-OAEP
+      - parentOrigin
+    bonus:
+      - handlePaymentProcess
+      - SUBMIT_CHD
+      - validCardField
+
+  - id: origin_enforcement
+    category: security
+    question: |
+      How does the Jazz iframe SDK prevent a malicious parent page from
+      spoofing messages into the iframe (and vice versa)? What are the two
+      independent checks it performs on every inbound message?
+    must_cite:
+      files:
+        - jazz_sdk/src/eventManager.ts
+    must_mention:
+      - trustedOrigin
+      - expectedSources
+      - window source
+    must_not_hallucinate:
+      - jazz_sdk/src/security.ts
+      - jazz_sdk/src/originGuard.ts
+    bonus:
+      - _handleMessage
+      - addExpectedSource
+      - pg.ottu.net
+
+  - id: chd_encryption
+    category: architecture
+    question: |
+      Where and how is card data (CHD) encrypted before it leaves the iframe?
+      Name the algorithm, the key source, and the file(s) that do the work.
+    must_cite:
+      files:
+        - ottu_pg/static/js/controllers.js
+      functions:
+        - encryptCHD
+        - fetchEncKey
+    must_mention:
+      - RSA-OAEP
+      - public key
+      - enc_key_url
+    bonus:
+      - key_alias
+      - submitCHD
+      - direct_payment_url
+
+  - id: saved_card_cvv_flow
+    category: flow_variant
+    question: |
+      How does the saved-card CVV-only payment flow differ from the full
+      PAN-entry flow? Name the entry points, what the iframe sends back, and
+      how the parent submits the result.
+    must_cite:
+      files:
+        - checkout_sdk/checkout/v3/selector.js
+        - checkout_sdk/checkout/v3/JazzIntegration.js
+        - jazz_sdk/src/jazzSDK.ts
+        - jazz_sdk/src/paymentHandler.ts
+    must_mention:
+      - embedCVVIframe
+      - submitCvv
+      - handleSubmitCvv
+    bonus:
+      - validateCvvField
+      - encryptCvv
+      - cvv_required
