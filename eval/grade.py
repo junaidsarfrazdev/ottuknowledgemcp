@@ -110,7 +110,17 @@ def _parse_grader_json(text: str) -> dict:
     return json.loads(t)
 
 
-def _grade_one(question: dict, answer_a: str, answer_b: str, model: str | None, timeout_s: int) -> dict:
+def _grade_one(
+    question: dict,
+    answer_a: str,
+    answer_b: str,
+    model: str | None,
+    timeout_s: int,
+    max_retries: int = 3,
+) -> dict:
+    """Grade one question. Retries transient failures (timeout, non-zero exit,
+    unparseable JSON) with exponential backoff so a single hiccup doesn't tank
+    the whole run."""
     mc = question.get("must_cite") or {}
     prompt = GRADER_PROMPT_TMPL.format(
         question=question["question"].strip(),
@@ -141,29 +151,84 @@ def _grade_one(question: dict, answer_a: str, answer_b: str, model: str | None, 
     if model:
         cmd += ["--model", model]
 
-    t0 = time.time()
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
-    elapsed = time.time() - t0
-    try:
-        outer = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return {
-            "_error": "grader_stdout_not_json",
-            "_stdout": proc.stdout[:4000],
-            "_stderr": proc.stderr[:2000],
-            "_elapsed": elapsed,
+    last_err: dict | None = None
+    delay = 2.0
+    for attempt in range(1, max_retries + 1):
+        t0 = time.time()
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            last_err = {
+                "_error": "grader_timeout",
+                "_attempt": attempt,
+                "_timeout_s": timeout_s,
+                "_elapsed": time.time() - t0,
+                "_stdout": (exc.stdout or "")[:2000] if isinstance(exc.stdout, str) else "",
+                "_stderr": (exc.stderr or "")[:2000] if isinstance(exc.stderr, str) else "",
+            }
+            if attempt < max_retries:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return last_err
+        elapsed = time.time() - t0
+
+        if proc.returncode != 0:
+            last_err = {
+                "_error": f"grader_exit_{proc.returncode}",
+                "_attempt": attempt,
+                "_stdout": proc.stdout[:2000],
+                "_stderr": proc.stderr[:2000],
+                "_elapsed": elapsed,
+            }
+            if attempt < max_retries:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return last_err
+
+        try:
+            outer = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            last_err = {
+                "_error": "grader_stdout_not_json",
+                "_attempt": attempt,
+                "_stdout": proc.stdout[:4000],
+                "_stderr": proc.stderr[:2000],
+                "_elapsed": elapsed,
+            }
+            if attempt < max_retries:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return last_err
+
+        body = outer.get("result") or ""
+        try:
+            parsed = _parse_grader_json(body)
+        except (json.JSONDecodeError, AttributeError) as e:
+            last_err = {
+                "_error": f"grader_json_parse: {e}",
+                "_attempt": attempt,
+                "_body": body[:4000],
+                "_elapsed": elapsed,
+            }
+            if attempt < max_retries:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return last_err
+
+        parsed["_elapsed"] = elapsed
+        parsed["_attempts"] = attempt
+        parsed["_grader_meta"] = {
+            "num_turns": outer.get("num_turns"),
+            "cost_usd": outer.get("total_cost_usd"),
         }
-    body = outer.get("result") or ""
-    try:
-        parsed = _parse_grader_json(body)
-    except (json.JSONDecodeError, AttributeError) as e:
-        return {"_error": f"grader_json_parse: {e}", "_body": body[:4000], "_elapsed": elapsed}
-    parsed["_elapsed"] = elapsed
-    parsed["_grader_meta"] = {
-        "num_turns": outer.get("num_turns"),
-        "cost_usd": outer.get("total_cost_usd"),
-    }
-    return parsed
+        return parsed
+
+    # Should be unreachable — every failure path either retries or returns above.
+    return last_err or {"_error": "grader_unknown_failure"}
 
 
 def main() -> None:

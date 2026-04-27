@@ -86,7 +86,11 @@ def _run_claude(
     model: str | None,
     timeout_s: int,
     max_budget_usd: float | None,
+    max_retries: int = 2,
 ) -> dict:
+    """Run a single claude -p invocation. Retries transient failures (timeout,
+    unparseable JSON, non-zero exit) up to ``max_retries`` extra attempts so a
+    single Anthropic blip doesn't kill the run."""
     cmd = [
         "claude",
         "-p",
@@ -107,39 +111,58 @@ def _run_claude(
     if max_budget_usd is not None:
         cmd += ["--max-budget-usd", str(max_budget_usd)]
 
-    start = time.time()
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
-            timeout=timeout_s,
-        )
-    except subprocess.TimeoutExpired as e:
-        return {
-            "_error": "timeout",
-            "_timeout_s": timeout_s,
-            "_wall_clock_s": time.time() - start,
-            "_stdout": (e.stdout or "")[:5000] if hasattr(e, "stdout") else "",
-            "_stderr": (e.stderr or "")[:5000] if hasattr(e, "stderr") else "",
-        }
-    elapsed = time.time() - start
+    delay = 4.0
+    last: dict = {}
+    attempts = max_retries + 1
+    for attempt in range(1, attempts + 1):
+        start = time.time()
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(cwd),
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as e:
+            last = {
+                "_error": "timeout",
+                "_attempt": attempt,
+                "_timeout_s": timeout_s,
+                "_wall_clock_s": time.time() - start,
+                "_stdout": (e.stdout or "")[:5000] if hasattr(e, "stdout") else "",
+                "_stderr": (e.stderr or "")[:5000] if hasattr(e, "stderr") else "",
+            }
+            if attempt < attempts:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return last
+        elapsed = time.time() - start
 
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        data = {
-            "_error": "unparseable_json",
-            "_stdout": proc.stdout[:8000],
-            "_stderr": proc.stderr[:4000],
-        }
-    data["_wall_clock_s"] = elapsed
-    data["_exit_code"] = proc.returncode
-    if proc.returncode != 0 and "_error" not in data:
-        data["_error"] = f"non_zero_exit_{proc.returncode}"
-        data["_stderr"] = proc.stderr[:4000]
-    return data
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            data = {
+                "_error": "unparseable_json",
+                "_stdout": proc.stdout[:8000],
+                "_stderr": proc.stderr[:4000],
+            }
+        data["_wall_clock_s"] = elapsed
+        data["_exit_code"] = proc.returncode
+        data["_attempt"] = attempt
+        if proc.returncode != 0 and "_error" not in data:
+            data["_error"] = f"non_zero_exit_{proc.returncode}"
+            data["_stderr"] = proc.stderr[:4000]
+
+        if "_error" in data and attempt < attempts:
+            last = data
+            time.sleep(delay)
+            delay *= 2
+            continue
+        return data
+
+    return last
 
 
 def _extract_answer_text(claude_json: dict) -> str:
