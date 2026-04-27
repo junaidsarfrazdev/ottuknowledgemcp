@@ -2,9 +2,12 @@
 
 Files are specified by absolute path in config.MARKDOWN_FILES.
 All go into a single collection: config.INTERNAL_DOCS_COLLECTION.
+Incremental: per-file SHA tracked in a sidecar metadata file at the project root.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +28,29 @@ _MD_SPLITTER = RecursiveCharacterTextSplitter.from_language(
 _DEFAULT_SPLITTER = RecursiveCharacterTextSplitter(
     chunk_size=config.CHUNK_SIZE, chunk_overlap=config.CHUNK_OVERLAP
 )
+
+_INTERNAL_META_PATH = config.PROJECT_ROOT / ".internal_docs_metadata.json"
+
+
+def _file_sha(path: Path) -> str:
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_meta() -> dict:
+    if not _INTERNAL_META_PATH.exists():
+        return {}
+    try:
+        return json.loads(_INTERNAL_META_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_meta(data: dict) -> None:
+    _INTERNAL_META_PATH.write_text(json.dumps(data, indent=2))
 
 
 def _load_md(path: Path) -> list[tuple[str, dict]]:
@@ -84,7 +110,7 @@ def _load(path: Path) -> list[tuple[str, dict]]:
         return _load_docx(path)
     if suf == ".xlsx":
         return _load_xlsx(path)
-    console.print(f"[yellow]\u26a0[/yellow]  Skipping unsupported file: {path}")
+    console.print(f"[yellow]⚠[/yellow]  Skipping unsupported file: {path}")
     return []
 
 
@@ -102,36 +128,66 @@ def index_internal_docs(
         name=config.INTERNAL_DOCS_COLLECTION,
         metadata={"ottu_internal_docs": True},
     )
+
+    meta_store = _load_meta()
+    known_files: dict[str, dict] = meta_store.get("files", {})
+
     ids: list[str] = []
     docs: list[str] = []
     metas: list[dict] = []
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    current_paths: set[str] = set()
+    changed = 0
+    skipped = 0
+    removed = 0
+
     for raw_path in config.MARKDOWN_FILES:
         path = Path(raw_path)
         if not path.exists():
-            console.print(f"[red]\u2717[/red] missing internal doc: {path}")
+            console.print(f"[red]✗[/red] missing internal doc: {path}")
             continue
-        # Remove prior content for this file
+        key = path.as_posix()
+        current_paths.add(key)
+        sha = _file_sha(path)
+        prev = known_files.get(key)
+        if prev and prev.get("sha") == sha:
+            skipped += 1
+            continue
+
         try:
             collection.delete(where={"path": str(path)})
         except Exception:
             pass
+
         pieces = _load(path)
         for idx, (piece, extra) in enumerate(pieces):
-            cid = f"internal:{path.as_posix()}:{idx}"
+            cid = f"internal:{key}:{idx}"
             meta = {
                 "path": str(path),
                 "filename": path.name,
                 "chunk_index": idx,
                 "format": path.suffix.lower().lstrip("."),
+                "file_sha": sha,
                 "ingested_at": now_iso,
             }
             meta.update(extra)
             ids.append(cid)
             docs.append(piece)
             metas.append(meta)
-        console.print(f"[green]\u2713[/green] {path.name}: {len(pieces)} chunks")
+        known_files[key] = {"sha": sha, "chunks": len(pieces)}
+        changed += 1
+        console.print(f"[green]✓[/green] {path.name}: {len(pieces)} chunks")
+
+    # Remove chunks for files dropped from MARKDOWN_FILES or missing on disk
+    stale = set(known_files.keys()) - current_paths
+    for key in stale:
+        try:
+            collection.delete(where={"path": key})
+        except Exception:
+            pass
+        known_files.pop(key, None)
+        removed += 1
 
     if ids:
         B = config.EMBED_BATCH_SIZE
@@ -145,4 +201,16 @@ def index_internal_docs(
                 embeddings=vectors,
             )
 
-    return {"chunks_written": len(ids), "files": len(config.MARKDOWN_FILES)}
+    _save_meta({"indexed_at": now_iso, "files": known_files})
+
+    console.print(
+        f"[green]✓[/green] internal docs: "
+        f"{changed} changed, {skipped} unchanged, {removed} removed, "
+        f"{len(ids)} chunks written"
+    )
+    return {
+        "chunks_written": len(ids),
+        "files_changed": changed,
+        "files_skipped": skipped,
+        "files_removed": removed,
+    }

@@ -4,8 +4,12 @@ __pycache__/
 .env
 .DS_Store
 .index_metadata.json
+.internal_docs_metadata.json
 repos/
 docs_local/
 !docs_local/.gitkeep
 .pytest_cache/
 *.egg-info/
+ottu_config.json
+eval/results/
+eval/mcp_on.json

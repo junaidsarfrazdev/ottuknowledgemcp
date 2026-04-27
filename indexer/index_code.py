@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -102,31 +102,30 @@ def _splitter_for_vue_section(section: str) -> RecursiveCharacterTextSplitter:
     return _DEFAULT_SPLITTER
 
 
-def _is_excluded(rel_parts: tuple[str, ...], name: str) -> bool:
-    if any(part in config.EXCLUDE_DIRS for part in rel_parts):
-        return True
-    if name in config.EXCLUDE_FILENAMES:
-        return True
-    if any(name.endswith(suf) for suf in config.EXCLUDE_SUFFIXES):
-        return True
-    return False
-
-
 def _walk_files(repo_root: Path) -> Iterable[Path]:
-    for path in repo_root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(repo_root)
-        if _is_excluded(rel.parts[:-1], path.name):
-            continue
-        if path.suffix.lower() not in config.INCLUDE_EXTENSIONS:
-            continue
-        try:
-            if path.stat().st_size > config.MAX_FILE_BYTES:
+    """Walk the repo with in-place directory pruning.
+
+    Pruning happens before descent, so excluded trees (node_modules, venv, …)
+    aren't enumerated at all — much faster than rglob on big repos.
+    """
+    root_str = str(repo_root)
+    for dirpath, dirnames, filenames in os.walk(root_str):
+        dirnames[:] = [d for d in dirnames if d not in config.EXCLUDE_DIRS]
+        for name in filenames:
+            if name in config.EXCLUDE_FILENAMES:
                 continue
-        except OSError:
-            continue
-        yield path
+            if any(name.endswith(suf) for suf in config.EXCLUDE_SUFFIXES):
+                continue
+            ext = Path(name).suffix.lower()
+            if ext not in config.INCLUDE_EXTENSIONS:
+                continue
+            p = Path(dirpath) / name
+            try:
+                if p.stat().st_size > config.MAX_FILE_BYTES:
+                    continue
+            except OSError:
+                continue
+            yield p
 
 
 def _file_sha(path: Path) -> str:
@@ -181,19 +180,26 @@ def _chunk_file(path: Path, rel_path: str) -> list[tuple[str, dict]]:
     if ext == ".vue":
         for section, body in _split_vue(text):
             splitter = _splitter_for_vue_section(section)
-            for idx, piece in enumerate(splitter.split_text(body)):
+            for section_idx, piece in enumerate(splitter.split_text(body)):
                 if piece.strip():
                     chunks.append(
-                        (piece, {"sfc_section": section, "chunk_index": idx, "language": ext.lstrip(".")})
+                        (
+                            piece,
+                            {
+                                "sfc_section": section,
+                                "section_index": section_idx,
+                                "language": ext.lstrip("."),
+                            },
+                        )
                     )
     else:
         splitter = _splitter_for(ext)
-        for idx, piece in enumerate(splitter.split_text(text)):
+        for piece in splitter.split_text(text):
             if piece.strip():
-                chunks.append(
-                    (piece, {"chunk_index": idx, "language": ext.lstrip(".")})
-                )
-    for _, meta in chunks:
+                chunks.append((piece, {"language": ext.lstrip(".")}))
+    # Assign globally-unique chunk_index (matches the chunk ID scheme)
+    for global_idx, (_, meta) in enumerate(chunks):
+        meta["chunk_index"] = global_idx
         meta["path"] = rel_path
     return chunks
 

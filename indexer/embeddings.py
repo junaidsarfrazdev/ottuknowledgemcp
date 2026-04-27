@@ -47,17 +47,26 @@ class OllamaEmbeddings:
                 f"Install from https://ollama.ai or run `ollama serve`."
             )
 
-    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def embed_batch(self, texts: list[str], max_retries: int = 3) -> list[list[float]]:
         if not texts:
             return []
-        r = requests.post(
-            f"{self.base_url}/api/embed",
-            json={"model": self.model, "input": texts},
-            timeout=self.timeout,
-        )
-        r.raise_for_status()
-        data = r.json()
-        return data["embeddings"]
+        delay = 1.0
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                r = requests.post(
+                    f"{self.base_url}/api/embed",
+                    json={"model": self.model, "input": texts},
+                    timeout=self.timeout,
+                )
+                r.raise_for_status()
+                return r.json()["embeddings"]
+            except (requests.RequestException, ValueError, KeyError) as e:
+                last_exc = e
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+        raise RuntimeError(f"Ollama embed failed after {max_retries} attempts: {last_exc}")
 
     def embed_documents(self, texts: list[str], batch_size: int | None = None) -> list[list[float]]:
         batch_size = batch_size or config.EMBED_BATCH_SIZE

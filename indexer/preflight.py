@@ -18,9 +18,9 @@ console = Console()
 
 def _clone_hint(repo: config.CodeRepo) -> str:
     return (
-        f"  git clone git@github.com:ottuco/{repo['name']}.git {repo['path']}\n"
-        f"  # or via SSH alias:\n"
-        f"  git clone git@junaid_ottu:ottuco/{repo['name']}.git {repo['path']}"
+        f"  gh repo clone ottuco/{repo['name']} {repo['path']}\n"
+        f"  # or:\n"
+        f"  git clone git@github.com:ottuco/{repo['name']}.git {repo['path']}"
     )
 
 

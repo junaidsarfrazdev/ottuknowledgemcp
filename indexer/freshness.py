@@ -23,6 +23,16 @@ def _git_head(path: Path) -> str | None:
         return None
 
 
+def _status_from_shas(indexed: str | None, current: str | None) -> str:
+    if indexed and current and indexed == current:
+        return "fresh"
+    if indexed and current:
+        return "stale"
+    if not indexed:
+        return "not-indexed"
+    return "unknown"
+
+
 def repo_freshness() -> list[dict]:
     rows: list[dict] = []
     for repo in config.REPOS:
@@ -41,9 +51,14 @@ def repo_freshness() -> list[dict]:
             continue
         indexed = meta.get("head_sha")
         current = _git_head(root)
-        status = "fresh" if indexed and indexed == current else "stale"
         rows.append(
-            {"name": repo["name"], "status": status, "indexed_sha": indexed, "current_sha": current, "indexed_at": meta.get("indexed_at")}
+            {
+                "name": repo["name"],
+                "status": _status_from_shas(indexed, current),
+                "indexed_sha": indexed,
+                "current_sha": current,
+                "indexed_at": meta.get("indexed_at"),
+            }
         )
     return rows
 
@@ -51,26 +66,42 @@ def repo_freshness() -> list[dict]:
 def docs_freshness() -> list[dict]:
     rows: list[dict] = []
     for site in config.DOCS_SITES:
-        if site.get("mode") == "docusaurus_repo":
+        mode = site.get("mode")
+        if mode == "docusaurus_repo":
             path = Path(site.get("path", ""))
             if not path.exists():
-                rows.append({"name": site["name"], "mode": "docusaurus_repo", "status": "missing"})
+                rows.append({"name": site["name"], "mode": mode, "status": "missing"})
                 continue
+            meta_path = path / config.DOCS_METADATA_FILENAME
+            indexed_sha = None
+            indexed_at = None
+            if meta_path.exists():
+                try:
+                    m = json.loads(meta_path.read_text())
+                    indexed_sha = m.get("head_sha")
+                    indexed_at = m.get("indexed_at")
+                except json.JSONDecodeError:
+                    pass
+            current = _git_head(path)
             rows.append(
                 {
                     "name": site["name"],
-                    "mode": "docusaurus_repo",
-                    "status": "unknown",  # determined by git sha on source repo, shown in repo_freshness-style output if desired
+                    "mode": mode,
+                    "status": _status_from_shas(indexed_sha, current),
                     "path": str(path),
-                    "current_sha": _git_head(path),
+                    "indexed_sha": indexed_sha,
+                    "current_sha": current,
+                    "indexed_at": indexed_at,
                 }
             )
-        elif site.get("mode") == "crawl":
+        elif mode == "crawl":
             url = site.get("url", "")
             try:
                 r = requests.head(url, timeout=10, allow_redirects=True)
                 last_modified = r.headers.get("Last-Modified", "")
             except requests.RequestException as e:
                 last_modified = f"error: {e}"
-            rows.append({"name": site["name"], "mode": "crawl", "status": "unknown", "url": url, "last_modified": last_modified})
+            rows.append(
+                {"name": site["name"], "mode": mode, "status": "unknown", "url": url, "last_modified": last_modified}
+            )
     return rows

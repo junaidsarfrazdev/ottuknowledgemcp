@@ -2,11 +2,14 @@
 
 - `docusaurus_repo` mode: walk .md/.mdx under a local Docusaurus repo's `docs/`
   directory, extract frontmatter, strip JSX tags, chunk with markdown splitter.
-- `crawl` mode: BeautifulSoup walk of a docs site. Captured Last-Modified for
-  freshness checking.
+  Incremental: tracks per-file SHA in `.index_metadata.json`, skips unchanged.
+- `crawl` mode: BeautifulSoup walk of a docs site. Captures Last-Modified for
+  freshness checking. Crawl mode re-crawls fully each run.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
 import time
@@ -74,6 +77,28 @@ def _git_head(path: Path) -> str | None:
         return None
 
 
+def _file_sha(path: Path) -> str:
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(64 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_site_metadata(root: Path) -> dict:
+    mp = root / config.DOCS_METADATA_FILENAME
+    if not mp.exists():
+        return {}
+    try:
+        return json.loads(mp.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def _save_site_metadata(root: Path, data: dict) -> None:
+    (root / config.DOCS_METADATA_FILENAME).write_text(json.dumps(data, indent=2))
+
+
 def _index_docusaurus_repo(
     site: config.DocsSite,
     client: chromadb.ClientAPI,
@@ -82,32 +107,49 @@ def _index_docusaurus_repo(
     root = Path(site["path"])
     docs_dir = root / "docs"
     if not docs_dir.exists():
-        console.print(f"[yellow]\u26a0[/yellow]  {site['name']}: no docs/ dir at {docs_dir}")
+        console.print(f"[yellow]⚠[/yellow]  {site['name']}: no docs/ dir at {docs_dir}")
         return {"site": site["name"], "chunks_written": 0}
 
     collection = client.get_or_create_collection(
         name=site["collection_name"], metadata={"ottu_docs_site": site["name"]}
     )
-    # Drop prior content for this site mode to keep indexing simple/idempotent.
-    try:
-        collection.delete(where={"source_mode": "docusaurus_repo"})
-    except Exception:
-        pass
 
     head_sha = _git_head(root) or "unknown"
     url_base = site.get("url_base", "").rstrip("/")
 
-    files = [p for p in docs_dir.rglob("*") if p.suffix.lower() in (".md", ".mdx")]
+    site_meta = _load_site_metadata(root)
+    known_files: dict[str, dict] = site_meta.get("files", {})
 
-    ids: list[str] = []
-    docs: list[str] = []
-    metas: list[dict] = []
+    files = [p for p in docs_dir.rglob("*") if p.suffix.lower() in (".md", ".mdx")]
+    current_paths: set[str] = set()
+
+    ids_to_add: list[str] = []
+    docs_to_add: list[str] = []
+    metas_to_add: list[dict] = []
+
+    changed = 0
+    skipped = 0
+    removed = 0
     now_iso = datetime.now(timezone.utc).isoformat()
 
     with Progress(console=console) as progress:
         task = progress.add_task(f"Indexing docs {site['name']}", total=len(files))
         for path in files:
             rel = path.relative_to(docs_dir).as_posix()
+            current_paths.add(rel)
+            sha = _file_sha(path)
+            prev = known_files.get(rel)
+            if prev and prev.get("sha") == sha:
+                skipped += 1
+                progress.advance(task)
+                continue
+
+            if prev:
+                try:
+                    collection.delete(where={"path": rel})
+                except Exception:
+                    pass
+
             try:
                 raw = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -122,46 +164,79 @@ def _index_docusaurus_repo(
                 body = raw
             body = _strip_mdx(body)
             if not body.strip():
+                known_files[rel] = {"sha": sha, "chunks": 0}
+                changed += 1
                 progress.advance(task)
                 continue
+
             slug = _slug_from_rel(rel, fm.get("slug"))
             url = f"{url_base}{slug}" if url_base else slug
             title = fm.get("title") or Path(rel).stem
+
+            chunk_count = 0
             for idx, piece in enumerate(_MD_SPLITTER.split_text(body)):
                 if not piece.strip():
                     continue
                 cid = f"{site['name']}:{rel}:{idx}"
-                meta = {
-                    "site": site["name"],
-                    "source_mode": "docusaurus_repo",
-                    "path": rel,
-                    "chunk_index": idx,
-                    "title": str(title),
-                    "url": url,
-                    "commit_sha": head_sha,
-                    "ingested_at": now_iso,
-                }
-                ids.append(cid)
-                docs.append(piece)
-                metas.append(meta)
+                ids_to_add.append(cid)
+                docs_to_add.append(piece)
+                metas_to_add.append(
+                    {
+                        "site": site["name"],
+                        "source_mode": "docusaurus_repo",
+                        "path": rel,
+                        "chunk_index": idx,
+                        "title": str(title),
+                        "url": url,
+                        "commit_sha": head_sha,
+                        "file_sha": sha,
+                        "ingested_at": now_iso,
+                    }
+                )
+                chunk_count += 1
+            known_files[rel] = {"sha": sha, "chunks": chunk_count}
+            changed += 1
             progress.advance(task)
 
-    if ids:
+    # Remove chunks for files no longer present
+    stale = set(known_files.keys()) - current_paths
+    for rel in stale:
+        try:
+            collection.delete(where={"path": rel})
+        except Exception:
+            pass
+        known_files.pop(rel, None)
+        removed += 1
+
+    if ids_to_add:
         B = config.EMBED_BATCH_SIZE
-        for i in range(0, len(ids), B):
-            batch = docs[i : i + B]
+        for i in range(0, len(ids_to_add), B):
+            batch = docs_to_add[i : i + B]
             vectors = embeddings.embed_documents(batch, batch_size=B)
             collection.add(
-                ids=ids[i : i + B],
+                ids=ids_to_add[i : i + B],
                 documents=batch,
-                metadatas=metas[i : i + B],
+                metadatas=metas_to_add[i : i + B],
                 embeddings=vectors,
             )
 
-    console.print(
-        f"[green]\u2713[/green] docs {site['name']}: {len(files)} files \u2192 {len(ids)} chunks"
+    _save_site_metadata(
+        root,
+        {
+            "site": site["name"],
+            "mode": "docusaurus_repo",
+            "head_sha": head_sha,
+            "indexed_at": now_iso,
+            "files": known_files,
+        },
     )
-    return {"site": site["name"], "chunks_written": len(ids), "head_sha": head_sha}
+
+    console.print(
+        f"[green]✓[/green] docs {site['name']}: "
+        f"{changed} changed, {skipped} unchanged, {removed} removed, "
+        f"{len(ids_to_add)} chunks written"
+    )
+    return {"site": site["name"], "chunks_written": len(ids_to_add), "head_sha": head_sha}
 
 
 def _index_crawl(
@@ -255,7 +330,7 @@ def _index_crawl(
             )
 
     console.print(
-        f"[green]\u2713[/green] crawl {site['name']}: {len(seen)} pages \u2192 {len(ids)} chunks"
+        f"[green]✓[/green] crawl {site['name']}: {len(seen)} pages → {len(ids)} chunks"
     )
     return {"site": site["name"], "chunks_written": len(ids), "pages_crawled": len(seen)}
 
@@ -271,5 +346,5 @@ def index_all_docs(
         elif mode == "crawl":
             out.append(_index_crawl(site, client, embeddings))
         else:
-            console.print(f"[yellow]\u26a0[/yellow]  unknown mode '{mode}' for {site.get('name')}")
+            console.print(f"[yellow]⚠[/yellow]  unknown mode '{mode}' for {site.get('name')}")
     return out

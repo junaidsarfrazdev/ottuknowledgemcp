@@ -59,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 
 ## Add your repos
 
-Pick a workspace directory (referred to as `<workspace>` below) and clone the repos you want indexed. Example:
+Pick a workspace directory and clone the repos you want indexed. Example:
 
 **macOS / Linux:**
 ```bash
@@ -84,13 +84,25 @@ gh repo clone ottuco/onsite_playground
 gh repo clone ottuco/docs
 ```
 
-Then open `indexer/config.py` and point it at your workspace:
+### Tell the MCP where your repos are
 
-- `OTTU_WORKSPACE` → absolute path to the directory you cloned into
-- `REPOS` → one entry per code repo (name, path, collection_name)
-- `DOCS_SITES` → one entry per Docusaurus/docs repo
+`setup.sh` / `setup.ps1` will prompt for the workspace path and write it to `.env` (gitignored). You can also set it manually:
 
-Only repos listed in `config.py` are indexed — remove entries you don't need, or append new ones.
+```bash
+# .env
+OTTU_WORKSPACE=/absolute/path/to/your/ottu-workspace
+```
+
+**Default repo list** (in `indexer/config.py`): `checkout_sdk`, `connect-sdk`, `onsite_playground`, docs site `ottu_docs_site`. Paths are built as `${OTTU_WORKSPACE}/<name>`.
+
+**Custom repo list**: copy `ottu_config.example.json` to `ottu_config.json` (gitignored), edit it, then point `OTTU_CONFIG` at it:
+
+```bash
+# .env
+OTTU_CONFIG=/absolute/path/to/OttuKnowledgeMCP/ottu_config.json
+```
+
+The JSON can override `workspace`, `repos`, `docs_sites`, `markdown_files`. Use `${WORKSPACE}` in paths for substitution. Only sources in the resolved config are indexed.
 
 ## Index
 
@@ -144,19 +156,31 @@ Create `<workspace>/.mcp.json` (project-scoped):
 
 Replace `<mcp-root>` with the absolute path where you cloned OttuKnowledgeMCP.
 
-Restart Claude Code. `/mcp` should show `ottu-knowledge` with 4 tools.
+Restart Claude Code. `/mcp` should show `ottu-knowledge` with its tools (`search_multi`, `search_ottu_code`, `search_ottu_docs`, `get_file_chunks`, `find_file`, `list_ottu_sources`, `check_ottu_freshness`).
 
 Approve the server on first prompt — Claude Code asks for trust when it sees a new `.mcp.json`. You can also opt in globally via `enableAllProjectMcpServers: true` in your user `~/.claude.json`.
 
 ## Adding a new source
 
-Edit `indexer/config.py`:
+Two options:
 
-- New code repo → append to `REPOS` list
-- New docs site → append to `DOCS_SITES`
-- New internal `.md` / `.docx` / `.xlsx` → drop in `docs_local/` and append its path to `MARKDOWN_FILES`
+**Quickest — use the default list.** If the repo is in `indexer/config.py` `DEFAULT_REPOS`, just clone it into `$OTTU_WORKSPACE` and re-run `python cli.py index`. Paths resolve automatically.
 
-Then `python cli.py index-code <name>` (or `index-docs`, `index-markdown`).
+**Custom list — use `ottu_config.json`.** Copy `ottu_config.example.json` → `ottu_config.json`, add/remove entries, set `OTTU_CONFIG` in `.env`:
+
+```json
+{
+  "workspace": "/Users/you/ottu-workspace",
+  "repos": [
+    {"name": "jazz_sdk", "path": "${WORKSPACE}/jazz_sdk",
+     "description": "Jazz iframe SDK", "collection_name": "ottu_jazz_sdk", "priority": 10}
+  ],
+  "docs_sites": [...],
+  "markdown_files": ["${WORKSPACE}/notes.md"]
+}
+```
+
+Then: `python cli.py index-code <name>` (or `index-docs`, `index-markdown`).
 
 ## CLI reference
 
@@ -186,6 +210,6 @@ Teammates: `git lfs pull` after cloning.
 
 - **Ollama not reachable**: run `ollama serve` (Linux/Windows) or restart the menu-bar app (macOS).
 - **Model missing**: `ollama pull nomic-embed-text`.
-- **Repo not found**: `python cli.py doctor` prints which paths are missing — fix `OTTU_WORKSPACE` / `REPOS` in `indexer/config.py`.
+- **Repo not found**: `python cli.py doctor` prints which paths are missing — fix `OTTU_WORKSPACE` in `.env`, or edit your `ottu_config.json` if you're using one.
 - **Tiny `chroma_db/chroma.sqlite3`**: `git lfs pull`.
 - **Windows: `Activate.ps1` blocked**: run PowerShell as admin once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.

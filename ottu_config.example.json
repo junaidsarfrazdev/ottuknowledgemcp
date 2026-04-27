@@ -1,0 +1,37 @@
+{
+  "_comment": "Copy to ottu_config.json (gitignored) and point OTTU_CONFIG at it. Paths support ${WORKSPACE}.",
+  "workspace": "/Users/YOU/projects/ottu",
+  "repos": [
+    {
+      "name": "checkout_sdk",
+      "path": "${WORKSPACE}/checkout_sdk",
+      "description": "Ottu checkout payment SDK (Webpack, JS)",
+      "collection_name": "ottu_checkout_sdk",
+      "priority": 10
+    },
+    {
+      "name": "jazz_sdk",
+      "path": "${WORKSPACE}/jazz_sdk",
+      "description": "Jazz iframe SDK (TypeScript)",
+      "collection_name": "ottu_jazz_sdk",
+      "priority": 10
+    },
+    {
+      "name": "ottu_pg",
+      "path": "${WORKSPACE}/ottu_pg",
+      "description": "Ottu payment gateway (Django)",
+      "collection_name": "ottu_pg",
+      "priority": 10
+    }
+  ],
+  "docs_sites": [
+    {
+      "name": "ottu_docs_site",
+      "mode": "docusaurus_repo",
+      "path": "${WORKSPACE}/docs",
+      "url_base": "https://docs.ottu.net",
+      "collection_name": "ottu_docs"
+    }
+  ],
+  "markdown_files": []
+}
