@@ -15,6 +15,35 @@ from .embeddings import OllamaEmbeddings
 
 console = Console()
 
+MIN_PYTHON = (3, 10)
+
+
+def check_python_version() -> bool:
+    """Warn if running below the documented minimum Python version."""
+    cur = sys.version_info[:2]
+    if cur < MIN_PYTHON:
+        console.print(
+            f"[red]✗[/red] Python {cur[0]}.{cur[1]} detected — "
+            f"minimum supported is {MIN_PYTHON[0]}.{MIN_PYTHON[1]}. "
+            "Some dependencies may fail."
+        )
+        return False
+    console.print(f"[green]✓[/green] Python {cur[0]}.{cur[1]}")
+    return True
+
+
+def check_workspace() -> bool:
+    """Confirm the resolved OTTU_WORKSPACE actually exists on disk."""
+    ws = Path(config.OTTU_WORKSPACE)
+    if not ws.exists():
+        console.print(
+            f"[yellow]⚠[/yellow]  OTTU_WORKSPACE={ws} does not exist. "
+            "Create it and clone your repos before indexing."
+        )
+        return False
+    console.print(f"[green]✓[/green] OTTU_WORKSPACE={ws}")
+    return True
+
 
 def _clone_hint(repo: config.CodeRepo) -> str:
     return (
@@ -88,6 +117,8 @@ def check_chroma_lfs() -> None:
 
 def run_all(strict: bool = True) -> None:
     console.print("[bold]Pre-flight checks[/bold]")
+    check_python_version()
+    check_workspace()
     check_repos(strict=strict)
     check_ollama(strict=strict)
     check_chroma_lfs()

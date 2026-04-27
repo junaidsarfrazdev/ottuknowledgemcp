@@ -250,36 +250,43 @@ async def _handle_search_multi(args: dict[str, Any]) -> list[TextContent]:
 
     vectors = _get_embeddings().embed_documents(queries)
 
-    seen_ids: set[str] = set()
-    sections: list[str] = []
-
+    # Best-query attribution: a chunk that hits multiple queries is shown
+    # exactly once, under whichever query had the lowest distance — so query 2
+    # never silently loses its top hit just because query 1 also matched it.
+    best: dict[str, tuple[str, search.Hit, bool]] = {}
     for query, vec in zip(queries, vectors):
-        code_hits = search.query_collections(code_colls, vec, limit) if code_colls else []
-        docs_hits = search.query_collections(docs_colls, vec, limit) if docs_colls else []
-
-        merged: list[tuple[search.Hit, bool]] = [(h, True) for h in code_hits] + [
-            (h, False) for h in docs_hits
-        ]
-        merged.sort(key=lambda x: x[0][3])
-
-        lines: list[str] = []
-        kept = 0
-        for (rid, meta, doc, dist), is_code in merged:
-            if kept >= limit:
-                break
-            if dist > max_dist or rid in seen_ids:
+        for h in search.query_collections(code_colls, vec, limit) if code_colls else []:
+            rid, _, _, dist = h
+            if dist > max_dist:
                 continue
-            seen_ids.add(rid)
+            prev = best.get(rid)
+            if prev is None or dist < prev[1][3]:
+                best[rid] = (query, h, True)
+        for h in search.query_collections(docs_colls, vec, limit) if docs_colls else []:
+            rid, _, _, dist = h
+            if dist > max_dist:
+                continue
+            prev = best.get(rid)
+            if prev is None or dist < prev[1][3]:
+                best[rid] = (query, h, False)
+
+    grouped: dict[str, list[tuple[search.Hit, bool]]] = {q: [] for q in queries}
+    for query, h, is_code in best.values():
+        grouped[query].append((h, is_code))
+
+    sections: list[str] = []
+    for query in queries:
+        items = sorted(grouped[query], key=lambda x: x[0][3])[:limit]
+        if not items:
+            sections.append(f"**{query}** — no results within max_distance={max_dist:.2f}")
+            continue
+        lines: list[str] = []
+        for (rid, meta, doc, dist), is_code in items:
             if is_code:
                 lines.append(search.format_code_hit(meta, doc, max_chars=snippet_chars, score=dist))
             else:
                 lines.append(search.format_docs_hit(meta, doc, max_chars=snippet_chars, score=dist))
-            kept += 1
-
-        if not lines:
-            sections.append(f"**{query}** — no results within max_distance={max_dist:.2f}")
-        else:
-            sections.append(f"**{query}** — {len(lines)} result(s)\n\n" + "\n\n".join(lines))
+        sections.append(f"**{query}** — {len(lines)} result(s)\n\n" + "\n\n".join(lines))
 
     return [TextContent(type="text", text=("\n\n" + "─" * 50 + "\n\n").join(sections))]
 

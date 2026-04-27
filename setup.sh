@@ -5,6 +5,20 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# --- Python version check ---------------------------------------------------
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "✗ python3 not found on PATH. Install Python 3.10+ first." >&2
+  exit 1
+fi
+PY_VER="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PY_MAJOR="$(echo "$PY_VER" | cut -d. -f1)"
+PY_MINOR="$(echo "$PY_VER" | cut -d. -f2)"
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
+  echo "✗ Python 3.10+ required, found $PY_VER. Upgrade or set python3 to a newer interpreter." >&2
+  exit 1
+fi
+echo "▶ Python $PY_VER OK"
+
 echo "▶ Creating venv..."
 if [ ! -d venv ]; then
   python3 -m venv venv

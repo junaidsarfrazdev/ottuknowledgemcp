@@ -336,9 +336,19 @@ def index_all(
     only: str | None = None,
     force: bool = False,
 ) -> list[dict]:
+    """Index every configured repo. One repo's failure does not abort the rest."""
     results = []
     for repo in config.REPOS:
         if only and repo["name"] != only:
             continue
-        results.append(index_repo(repo, client, embeddings, force=force))
+        try:
+            results.append(index_repo(repo, client, embeddings, force=force))
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            console.print(
+                f"[red]✗[/red] {repo['name']} failed: {e.__class__.__name__}: {e}. "
+                "Continuing with remaining repos."
+            )
+            results.append({"repo": repo["name"], "error": f"{e.__class__.__name__}: {e}"})
     return results

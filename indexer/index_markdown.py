@@ -54,11 +54,23 @@ def _save_meta(data: dict) -> None:
 
 
 def _load_md(path: Path) -> list[tuple[str, dict]]:
+    if path.stat().st_size > config.MAX_DOC_BYTES:
+        console.print(
+            f"[yellow]⚠[/yellow]  skipping {path.name} — larger than MAX_DOC_BYTES "
+            f"({config.MAX_DOC_BYTES} bytes)"
+        )
+        return []
     text = path.read_text(encoding="utf-8", errors="replace")
     return [(p, {}) for p in _MD_SPLITTER.split_text(text) if p.strip()]
 
 
 def _load_docx(path: Path) -> list[tuple[str, dict]]:
+    if path.stat().st_size > config.MAX_DOC_BYTES:
+        console.print(
+            f"[yellow]⚠[/yellow]  skipping {path.name} — larger than MAX_DOC_BYTES "
+            f"({config.MAX_DOC_BYTES} bytes)"
+        )
+        return []
     try:
         from docx import Document  # type: ignore
     except ImportError:
@@ -79,27 +91,36 @@ def _load_docx(path: Path) -> list[tuple[str, dict]]:
 
 
 def _load_xlsx(path: Path) -> list[tuple[str, dict]]:
+    if path.stat().st_size > config.MAX_DOC_BYTES:
+        console.print(
+            f"[yellow]⚠[/yellow]  skipping {path.name} — larger than MAX_DOC_BYTES "
+            f"({config.MAX_DOC_BYTES} bytes)"
+        )
+        return []
     try:
         from openpyxl import load_workbook  # type: ignore
     except ImportError:
         console.print("[red]openpyxl not installed. Install requirements.txt.[/red]")
         return []
     wb = load_workbook(filename=str(path), data_only=True, read_only=True)
-    chunks: list[tuple[str, dict]] = []
-    for sheet in wb.sheetnames:
-        ws = wb[sheet]
-        rows_text: list[str] = []
-        for row in ws.iter_rows(values_only=True):
-            cells = ["" if v is None else str(v) for v in row]
-            if any(c.strip() for c in cells):
-                rows_text.append(",".join(cells))
-        if not rows_text:
-            continue
-        sheet_text = f"# Sheet: {sheet}\n" + "\n".join(rows_text)
-        for piece in _DEFAULT_SPLITTER.split_text(sheet_text):
-            if piece.strip():
-                chunks.append((piece, {"sheet_name": sheet}))
-    return chunks
+    try:
+        chunks: list[tuple[str, dict]] = []
+        for sheet in wb.sheetnames:
+            ws = wb[sheet]
+            rows_text: list[str] = []
+            for row in ws.iter_rows(values_only=True):
+                cells = ["" if v is None else str(v) for v in row]
+                if any(c.strip() for c in cells):
+                    rows_text.append(",".join(cells))
+            if not rows_text:
+                continue
+            sheet_text = f"# Sheet: {sheet}\n" + "\n".join(rows_text)
+            for piece in _DEFAULT_SPLITTER.split_text(sheet_text):
+                if piece.strip():
+                    chunks.append((piece, {"sheet_name": sheet}))
+        return chunks
+    finally:
+        wb.close()
 
 
 def _load(path: Path) -> list[tuple[str, dict]]:

@@ -4,6 +4,21 @@ $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Here
 
+# --- Python version check ---------------------------------------------------
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+    Write-Error "python not found on PATH. Install Python 3.10+ first."
+    exit 1
+}
+$pyVer = (python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+$parts = $pyVer.Split('.')
+$pyMajor = [int]$parts[0]
+$pyMinor = [int]$parts[1]
+if ($pyMajor -lt 3 -or ($pyMajor -eq 3 -and $pyMinor -lt 10)) {
+    Write-Error "Python 3.10+ required, found $pyVer. Upgrade Python or alias 'python' to a newer interpreter."
+    exit 1
+}
+Write-Host "▶ Python $pyVer OK"
+
 Write-Host "▶ Creating venv..."
 if (-not (Test-Path "venv")) {
     python -m venv venv

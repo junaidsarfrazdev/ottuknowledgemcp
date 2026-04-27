@@ -120,7 +120,20 @@ def _index_docusaurus_repo(
     site_meta = _load_site_metadata(root)
     known_files: dict[str, dict] = site_meta.get("files", {})
 
-    files = [p for p in docs_dir.rglob("*") if p.suffix.lower() in (".md", ".mdx")]
+    files: list[Path] = []
+    for p in docs_dir.rglob("*"):
+        if p.suffix.lower() not in (".md", ".mdx"):
+            continue
+        try:
+            if p.stat().st_size > config.MAX_DOC_BYTES:
+                console.print(
+                    f"[yellow]⚠[/yellow]  skipping {p.relative_to(docs_dir).as_posix()} — "
+                    f"larger than MAX_DOC_BYTES ({config.MAX_DOC_BYTES} bytes)"
+                )
+                continue
+        except OSError:
+            continue
+        files.append(p)
     current_paths: set[str] = set()
 
     ids_to_add: list[str] = []
@@ -350,13 +363,26 @@ def _index_crawl(
 def index_all_docs(
     client: chromadb.ClientAPI, embeddings: OllamaEmbeddings
 ) -> list[dict]:
+    """Index every configured docs site. One site's failure does not abort the rest."""
     out = []
     for site in config.DOCS_SITES:
         mode = site.get("mode")
-        if mode == "docusaurus_repo":
-            out.append(_index_docusaurus_repo(site, client, embeddings))
-        elif mode == "crawl":
-            out.append(_index_crawl(site, client, embeddings))
-        else:
-            console.print(f"[yellow]⚠[/yellow]  unknown mode '{mode}' for {site.get('name')}")
+        try:
+            if mode == "docusaurus_repo":
+                out.append(_index_docusaurus_repo(site, client, embeddings))
+            elif mode == "crawl":
+                out.append(_index_crawl(site, client, embeddings))
+            else:
+                console.print(
+                    f"[yellow]⚠[/yellow]  unknown mode '{mode}' for {site.get('name')}"
+                )
+                out.append({"site": site.get("name"), "error": f"unknown mode '{mode}'"})
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            console.print(
+                f"[red]✗[/red] docs {site.get('name')} failed: "
+                f"{e.__class__.__name__}: {e}. Continuing."
+            )
+            out.append({"site": site.get("name"), "error": f"{e.__class__.__name__}: {e}"})
     return out

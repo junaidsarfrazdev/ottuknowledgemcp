@@ -146,7 +146,8 @@ EXCLUDE_FILENAMES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 EMBED_BATCH_SIZE = 50
-MAX_FILE_BYTES = 500_000
+MAX_FILE_BYTES = 500_000  # code files
+MAX_DOC_BYTES = 2_000_000  # markdown / docx / xlsx — two-megabyte cap on docs
 
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")

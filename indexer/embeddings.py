@@ -78,9 +78,12 @@ class OllamaEmbeddings:
     def embed_query(self, text: str) -> list[float]:
         now = time.time()
         cached = self._cache.get(text)
-        if cached and now - cached[0] < self.cache_ttl:
-            self._cache.move_to_end(text)
-            return cached[1]
+        if cached:
+            if now - cached[0] < self.cache_ttl:
+                self._cache.move_to_end(text)
+                return cached[1]
+            # Stale — drop it so we don't keep stale entries in capacity.
+            self._cache.pop(text, None)
         vec = self.embed_batch([text])[0]
         self._cache[text] = (now, vec)
         self._cache.move_to_end(text)
