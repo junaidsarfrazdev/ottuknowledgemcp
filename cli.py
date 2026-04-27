@@ -9,7 +9,15 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from indexer import config, freshness, index_code, index_docs, index_markdown, preflight
+from indexer import (
+    config,
+    freshness,
+    index_code,
+    index_docs,
+    index_markdown,
+    preflight,
+    search,
+)
 from indexer.embeddings import OllamaEmbeddings
 
 console = Console()
@@ -87,6 +95,14 @@ def reindex() -> None:
         mp = Path(repo["path"]) / config.METADATA_FILENAME
         if mp.exists():
             mp.unlink()
+    for site in config.DOCS_SITES:
+        if site.get("mode") == "docusaurus_repo" and site.get("path"):
+            mp = Path(site["path"]) / config.DOCS_METADATA_FILENAME
+            if mp.exists():
+                mp.unlink()
+    internal_mp = config.PROJECT_ROOT / ".internal_docs_metadata.json"
+    if internal_mp.exists():
+        internal_mp.unlink()
     emb = _embeddings()
     index_code.index_all(client, emb)
     index_docs.index_all_docs(client, emb)
@@ -129,7 +145,7 @@ def stats() -> None:
 @click.option("--repo", default=None, help="Restrict to one repo")
 @click.option("--limit", default=5)
 @click.option("--docs", is_flag=True, help="Search docs collections instead of code")
-def search(query: str, repo: str | None, limit: int, docs: bool) -> None:
+def search_cmd(query: str, repo: str | None, limit: int, docs: bool) -> None:
     """Ad-hoc semantic search from the CLI."""
     client = _client()
     emb = _embeddings()
@@ -159,27 +175,17 @@ def search(query: str, repo: str | None, limit: int, docs: bool) -> None:
         console.print("[red]No matching collections. Run an index command first.[/red]")
         sys.exit(1)
 
-    hits: list[tuple[dict, str, float]] = []
-    for coll in targets:
-        try:
-            res = coll.query(
-                query_embeddings=[vec], n_results=limit,
-                include=["documents", "metadatas", "distances"],
-            )
-        except Exception:
-            continue
-        ds = (res.get("documents") or [[]])[0]
-        ms = (res.get("metadatas") or [[]])[0]
-        dd = (res.get("distances") or [[]])[0]
-        for d, m, dist in zip(ds, ms, dd):
-            hits.append((m or {}, d or "", float(dist)))
-    hits.sort(key=lambda h: h[2])
-    for m, d, dist in hits[:limit]:
+    hits = search.query_collections(targets, vec, limit)
+    for _, m, d, dist in hits:
         repo_or_site = m.get("repo") or m.get("site") or m.get("filename") or "?"
         path = m.get("path", m.get("url", ""))
         console.print(f"[cyan]{repo_or_site}[/cyan] {path}  [dim](distance {dist:.3f})[/dim]")
         snippet = d.strip().replace("\n", "\n  ")
         console.print(f"  {snippet[:500]}{'...' if len(snippet) > 500 else ''}\n")
+
+
+# Keep the historical command name too
+cli.add_command(search_cmd, name="search")
 
 
 @cli.command("freshness")
@@ -194,9 +200,21 @@ def freshness_cmd() -> None:
     table.add_column("Indexed SHA")
     table.add_column("Current SHA")
     for r in rows_code:
-        table.add_row(r["name"], "repo", r["status"], (r.get("indexed_sha") or "-")[:10], (r.get("current_sha") or "-")[:10])
+        table.add_row(
+            r["name"],
+            "repo",
+            r["status"],
+            (r.get("indexed_sha") or "-")[:10],
+            (r.get("current_sha") or "-")[:10],
+        )
     for r in rows_docs:
-        table.add_row(r["name"], "docs:" + r.get("mode", "?"), r["status"], "-", (r.get("current_sha") or r.get("last_modified") or "-")[:40])
+        table.add_row(
+            r["name"],
+            "docs:" + r.get("mode", "?"),
+            r["status"],
+            (r.get("indexed_sha") or "-")[:10],
+            (r.get("current_sha") or r.get("last_modified") or "-")[:40],
+        )
     console.print(table)
 
 
