@@ -247,8 +247,8 @@ def index_repo(
 
             chunks = _chunk_file(path, rel)
             now_iso = datetime.now(timezone.utc).isoformat()
-            for piece, meta in chunks:
-                chunk_id = f"{repo['name']}:{rel}:{meta['chunk_index']}"
+            for global_idx, (piece, meta) in enumerate(chunks):
+                chunk_id = f"{repo['name']}:{rel}:{global_idx}"
                 meta.update(
                     {
                         "repo": repo["name"],

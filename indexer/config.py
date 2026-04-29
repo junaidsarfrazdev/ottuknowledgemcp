@@ -29,7 +29,7 @@ class DocsSite(TypedDict, total=False):
     collection_name: str
 
 
-OTTU_WORKSPACE = "/Users/dev/projects/ottu/junaid"
+OTTU_WORKSPACE = "/home/dev/projects/ottu"
 
 REPOS: list[CodeRepo] = [
     {
@@ -52,6 +52,97 @@ REPOS: list[CodeRepo] = [
         "description": "Onsite integration HTML/JS demos",
         "collection_name": "ottu_onsite_playground",
         "priority": 5,
+    },
+    {
+        "name": "ottu-js-sdk",
+        "path": f"{OTTU_WORKSPACE}/ottu-js-sdk",
+        "description": "Ottu JavaScript SDK",
+        "collection_name": "ottu_js_sdk",
+        "priority": 10,
+    },
+    {
+        "name": "core_frontend",
+        "path": f"{OTTU_WORKSPACE}/core_frontend",
+        "description": "Core admin/dashboard frontend",
+        "collection_name": "ottu_core_frontend",
+        "priority": 10,
+    },
+    {
+        "name": "frontend_public",
+        "path": f"{OTTU_WORKSPACE}/frontend_public",
+        "description": "Public-facing frontend (checkout flow)",
+        "collection_name": "ottu_frontend_public",
+        "priority": 10,
+    },
+    {
+        "name": "echo_frontend",
+        "path": f"{OTTU_WORKSPACE}/echo_frontend",
+        "description": "Echo product frontend",
+        "collection_name": "ottu_echo_frontend",
+        "priority": 5,
+    },
+    {
+        "name": "event_frontend",
+        "path": f"{OTTU_WORKSPACE}/event_frontend",
+        "description": "Event ticketing frontend",
+        "collection_name": "ottu_event_frontend",
+        "priority": 5,
+    },
+    {
+        "name": "fnb_frontend",
+        "path": f"{OTTU_WORKSPACE}/fnb_frontend",
+        "description": "Food & beverage frontend",
+        "collection_name": "ottu_fnb_frontend",
+        "priority": 5,
+    },
+    {
+        "name": "payout_frontend",
+        "path": f"{OTTU_WORKSPACE}/payout_frontend",
+        "description": "Payout product frontend",
+        "collection_name": "ottu_payout_frontend",
+        "priority": 5,
+    },
+    {
+        "name": "real_estate_frontend",
+        "path": f"{OTTU_WORKSPACE}/real_estate_frontend",
+        "description": "Real estate vertical frontend",
+        "collection_name": "ottu_real_estate_frontend",
+        "priority": 5,
+    },
+    {
+        "name": "navigation_v2",
+        "path": f"{OTTU_WORKSPACE}/navigation_v2",
+        "description": "Navigation shell v2 (microfrontend host)",
+        "collection_name": "ottu_navigation_v2",
+        "priority": 10,
+    },
+    {
+        "name": "root_conf",
+        "path": f"{OTTU_WORKSPACE}/root_conf",
+        "description": "Root configuration / orchestration",
+        "collection_name": "ottu_root_conf",
+        "priority": 5,
+    },
+    {
+        "name": "toolbox",
+        "path": f"{OTTU_WORKSPACE}/toolbox",
+        "description": "Shared toolbox utilities",
+        "collection_name": "ottu_toolbox",
+        "priority": 5,
+    },
+    {
+        "name": "pdf-renderer",
+        "path": f"{OTTU_WORKSPACE}/pdf-renderer",
+        "description": "PDF rendering service",
+        "collection_name": "ottu_pdf_renderer",
+        "priority": 3,
+    },
+    {
+        "name": "docusaurus-openapi-docs",
+        "path": f"{OTTU_WORKSPACE}/docusaurus-openapi-docs",
+        "description": "OpenAPI Docusaurus plugin/customization",
+        "collection_name": "ottu_docusaurus_openapi_docs",
+        "priority": 3,
     },
 ]
 
