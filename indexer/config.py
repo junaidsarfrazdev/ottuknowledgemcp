@@ -154,6 +154,13 @@ DOCS_SITES: list[DocsSite] = [
         "url_base": "https://docs.ottu.net",
         "collection_name": "ottu_docs",
     },
+    {
+        "name": "ottu_wallet_docs",
+        "mode": "openapi",
+        "url": "https://wallet.ottu.dev/openapi.json",
+        "docs_url": "https://wallet.ottu.dev/docs",
+        "collection_name": "ottu_wallet_docs",
+    },
 ]
 
 # Absolute paths to .md / .docx / .xlsx files living under docs_local/ (or anywhere).

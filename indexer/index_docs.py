@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import time
@@ -260,6 +261,197 @@ def _index_crawl(
     return {"site": site["name"], "chunks_written": len(ids), "pages_crawled": len(seen)}
 
 
+def _format_operation(path: str, method: str, op: dict, components: dict) -> str:
+    lines = [f"# {method.upper()} {path}"]
+    if op.get("summary"):
+        lines.append(f"\n**Summary:** {op['summary']}")
+    if op.get("operationId"):
+        lines.append(f"\n**Operation ID:** `{op['operationId']}`")
+    if op.get("tags"):
+        lines.append(f"\n**Tags:** {', '.join(op['tags'])}")
+    if op.get("description"):
+        lines.append(f"\n## Description\n\n{op['description']}")
+    params = op.get("parameters") or []
+    if params:
+        lines.append("\n## Parameters\n")
+        for p in params:
+            loc = p.get("in", "?")
+            name = p.get("name", "?")
+            req = " (required)" if p.get("required") else ""
+            desc = p.get("description", "")
+            schema = p.get("schema") or {}
+            type_ = schema.get("type") or schema.get("$ref", "")
+            lines.append(f"- `{name}` [{loc}]{req} \u2014 {type_}: {desc}")
+    body = op.get("requestBody")
+    if body:
+        lines.append("\n## Request Body\n")
+        if body.get("description"):
+            lines.append(body["description"])
+        for ct, media in (body.get("content") or {}).items():
+            schema = media.get("schema") or {}
+            lines.append(f"\n- Content-Type: `{ct}`")
+            if "$ref" in schema:
+                lines.append(f"  - Schema: `{schema['$ref']}`")
+            elif schema:
+                lines.append(f"  - Schema: ```json\n{json.dumps(schema, indent=2)[:1500]}\n```")
+    responses = op.get("responses") or {}
+    if responses:
+        lines.append("\n## Responses\n")
+        for code, resp in responses.items():
+            desc = resp.get("description", "")
+            lines.append(f"- **{code}** \u2014 {desc}")
+            for ct, media in (resp.get("content") or {}).items():
+                schema = media.get("schema") or {}
+                if "$ref" in schema:
+                    lines.append(f"  - `{ct}`: `{schema['$ref']}`")
+    return "\n".join(lines)
+
+
+def _format_schema(name: str, schema: dict) -> str:
+    lines = [f"# Schema: {name}"]
+    if schema.get("description"):
+        lines.append(f"\n{schema['description']}")
+    if schema.get("type"):
+        lines.append(f"\n**Type:** {schema['type']}")
+    if schema.get("required"):
+        lines.append(f"\n**Required:** {', '.join(schema['required'])}")
+    props = schema.get("properties") or {}
+    if props:
+        lines.append("\n## Properties\n")
+        for pname, pschema in props.items():
+            ptype = pschema.get("type") or pschema.get("$ref", "")
+            pdesc = pschema.get("description", "")
+            lines.append(f"- `{pname}` ({ptype}) \u2014 {pdesc}")
+    if schema.get("enum"):
+        lines.append(f"\n**Enum:** {schema['enum']}")
+    lines.append(f"\n## Raw\n\n```json\n{json.dumps(schema, indent=2)[:2000]}\n```")
+    return "\n".join(lines)
+
+
+def _index_openapi(
+    site: config.DocsSite,
+    client: chromadb.ClientAPI,
+    embeddings: OllamaEmbeddings,
+) -> dict:
+    spec_url = site["url"].rstrip("/")
+    docs_url = site.get("docs_url", spec_url)
+    try:
+        r = requests.get(spec_url, timeout=30)
+        r.raise_for_status()
+        spec = r.json()
+    except Exception as e:
+        console.print(f"[red]\u2717[/red] {site['name']}: failed to fetch {spec_url}: {e}")
+        return {"site": site["name"], "chunks_written": 0}
+
+    collection = client.get_or_create_collection(
+        name=site["collection_name"], metadata={"ottu_docs_site": site["name"]}
+    )
+    try:
+        collection.delete(where={"source_mode": "openapi"})
+    except Exception:
+        pass
+
+    components = spec.get("components") or {}
+    info = spec.get("info") or {}
+    api_title = info.get("title", site["name"])
+    api_version = info.get("version", "")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    ids: list[str] = []
+    docs: list[str] = []
+    metas: list[dict] = []
+
+    if info.get("description"):
+        overview = f"# {api_title} (v{api_version})\n\n{info['description']}"
+        for idx, piece in enumerate(_MD_SPLITTER.split_text(overview)):
+            if not piece.strip():
+                continue
+            ids.append(f"{site['name']}:overview:{idx}")
+            docs.append(piece)
+            metas.append({
+                "site": site["name"],
+                "source_mode": "openapi",
+                "kind": "overview",
+                "title": f"{api_title} overview",
+                "url": docs_url,
+                "chunk_index": idx,
+                "ingested_at": now_iso,
+            })
+
+    paths = spec.get("paths") or {}
+    for path, path_item in paths.items():
+        for method, op in path_item.items():
+            if method.lower() not in {"get", "post", "put", "patch", "delete", "options", "head"}:
+                continue
+            if not isinstance(op, dict):
+                continue
+            text = _format_operation(path, method, op, components)
+            for idx, piece in enumerate(_MD_SPLITTER.split_text(text)):
+                if not piece.strip():
+                    continue
+                cid = f"{site['name']}:op:{method.upper()}:{path}:{idx}"
+                ids.append(cid)
+                docs.append(piece)
+                metas.append({
+                    "site": site["name"],
+                    "source_mode": "openapi",
+                    "kind": "operation",
+                    "method": method.upper(),
+                    "path": path,
+                    "operation_id": op.get("operationId", ""),
+                    "title": op.get("summary") or f"{method.upper()} {path}",
+                    "tags": ",".join(op.get("tags", []) or []),
+                    "url": f"{docs_url}#operation/{op.get('operationId', '')}" if op.get("operationId") else docs_url,
+                    "chunk_index": idx,
+                    "ingested_at": now_iso,
+                })
+
+    schemas = components.get("schemas") or {}
+    for sname, sschema in schemas.items():
+        if not isinstance(sschema, dict):
+            continue
+        text = _format_schema(sname, sschema)
+        for idx, piece in enumerate(_MD_SPLITTER.split_text(text)):
+            if not piece.strip():
+                continue
+            cid = f"{site['name']}:schema:{sname}:{idx}"
+            ids.append(cid)
+            docs.append(piece)
+            metas.append({
+                "site": site["name"],
+                "source_mode": "openapi",
+                "kind": "schema",
+                "schema_name": sname,
+                "title": f"Schema: {sname}",
+                "url": f"{docs_url}#schema/{sname}",
+                "chunk_index": idx,
+                "ingested_at": now_iso,
+            })
+
+    if ids:
+        B = config.EMBED_BATCH_SIZE
+        for i in range(0, len(ids), B):
+            batch = docs[i : i + B]
+            vectors = embeddings.embed_documents(batch, batch_size=B)
+            collection.add(
+                ids=ids[i : i + B],
+                documents=batch,
+                metadatas=metas[i : i + B],
+                embeddings=vectors,
+            )
+
+    console.print(
+        f"[green]\u2713[/green] openapi {site['name']}: {len(paths)} paths, "
+        f"{len(schemas)} schemas \u2192 {len(ids)} chunks"
+    )
+    return {
+        "site": site["name"],
+        "chunks_written": len(ids),
+        "paths_indexed": len(paths),
+        "schemas_indexed": len(schemas),
+    }
+
+
 def index_all_docs(
     client: chromadb.ClientAPI, embeddings: OllamaEmbeddings
 ) -> list[dict]:
@@ -270,6 +462,8 @@ def index_all_docs(
             out.append(_index_docusaurus_repo(site, client, embeddings))
         elif mode == "crawl":
             out.append(_index_crawl(site, client, embeddings))
+        elif mode == "openapi":
+            out.append(_index_openapi(site, client, embeddings))
         else:
             console.print(f"[yellow]\u26a0[/yellow]  unknown mode '{mode}' for {site.get('name')}")
     return out
